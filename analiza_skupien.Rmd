@@ -1,0 +1,378 @@
+---
+title: "Projekt 2"
+author: "PW"
+date: "2 grudnia 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+## 1. Wprowadzenie i przygotowanie danych
+
+### 1.1 Wprowadzenie
+
+Przedmiotem projektu będzie przeprowadzenie analizy skupień (grupowania podziałowego i hierarchicznego) oraz analiza wyników. Analiza Skupień jest dziedziną zajmującą się organizowaniem obserwacji w pewne stryktury - grupy, które cechować mają się jak największym podobieństwem wśród obserwacji jednej grupy oraz jak największymi różnicami pomiędzy poszczególnymi grupami. Analiza skupień pozwala na wykrycie odpowiednich struktur, lecz bez wyjaśnienia dlaczego one występują i dlaczego w takiej właśnie formie. Jest metodą uczenia maszynowego bez nadzoru.
+
+```{r, echo=FALSE}
+library(cluster)
+library(psych)
+library(ggplot2)
+library(kableExtra)
+```
+
+
+### 1.2 Opis danych
+
+W ramach projektu użyję znalezione przeze mnie dane Przedstawiają one statystyki meczowe dla poszczególnych piłkarzy z pola występujących w czołowych zespołach Premier League. Statystyki dotyczą sezonu 2017/2018, pochodzą ze strony https://www.premierleague.com/home. W zebranych danych uwzględniłem jedynie zawodników występujących w klubach regularnie walczących o europejskie puchary, którzy rozegrali co najmniej 25 meczów w danym sezonie.
+
+<br/>
+Dane przedstawiają się następująco:
+
+```{r, echo=FALSE}
+dane <- read.csv("footballers.csv", sep= ";", dec = ",", header = TRUE)
+rownames(dane) <- dane$Player
+dane <- dane[,-1]
+colnames(dane)[5] <- "Passer per match"
+colnames(dane)[6] <- "Big chances created"
+dane %>% kable() %>% kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% scroll_box(width = "100%", height = "300px")
+```
+</br>
+*Zmienne w kolumnach opisują:*
+
+* **Goals** - liczba bramek zdobyta przez zawodnika,
+
+* **Offsides** - liczba spalonych danego zawodnika,
+
+* **Shots** - liczba oddanych strzałów,
+
+* **Passer per match **- liczba podań wykonywana przez danego zawodnika średnio w jednym meczu,
+
+* **Big Chances Created** - liczba sytuacji stuprocentowych jakie dany zawodnik wykreował kolegom z drużyny,
+
+* **Crosses** - liczba dośrodkowań w pole karne przeciwnika,
+
+* **Interceptions** - liczba odbiorów/przechwyceń piłki,
+
+* **Clearences** - liczba wybić piłki, pozwalających na  oddalenie zagrożenia od bramki.
+
+
+### 1.2 Analiza danych
+
+W celu wykrycia potencjalnych **outlier'ów** oraz sprawdzenia jak przedstawiają się **podstawowe statystyki opisowe** zebranych danych za pomocą funkcji `summary` oblicze je dla poszczególnych zmiennych.
+<br/>
+```{r, echo=FALSE}
+summary(dane)
+```
+
+Widzimy, że w niektórych zmiennych wartość 1 kwantyla jest stosunkowo bliska wartości minimalnej. Poszczególne zmienne ciężko porównywać ze sobą ze względu na to że przyjmują różne wartości - np. liczba bramek jest z zakresu 0-21, podczas gdy liczba przechwytów jest z zakresu 3-85. W kolejnych etapach badania zdecyduję się zestandaryzować zmienne, aby były porównywalne i miały porównywalny wpływ na wyniki grupowania. 
+<br/>
+Aby lepiej zobrazować dane oraz sprawdzić możliwość występowania ewentualnych outlier'ów narysuję wykresy pudełkowe dla poszczególnych zmiennych. Wykorzystam funkcję `boxplot`.
+<br/>
+
+```{r, echo=FALSE}
+par(mfrow=c(1,3))
+boxplot(dane$Goals, main = "Zdobyte bramki", col = "red")
+boxplot(dane$Assists, main = "Asysty", col = "yellow")
+boxplot(dane$`Big chances created`, main= "Wykreowane sytuacje", col = "orange")
+par(mfrow=c(1,3))
+boxplot(dane$Offsides, main = "Liczba spalonych", col = "green")
+boxplot(dane$Shots, main = "Oddane strzały", col = "gray")
+boxplot(dane$`Passer per match`, main = "Podania na mecz", col = "brown")
+par(mfrow=c(1,3))
+boxplot(dane$Crosses, main = "Dośrodkowania", col = "blue")
+boxplot(dane$Clearences, main = "Wybicia", col = "purple")
+boxplot(dane$Interceptions, main = "Przechwyty", col = "pink")
+```
+
+Widzimy, że na podstawie wykresów pudełkowych jedynym sugerowanych outlierem jest wartość maksymalna liczby wybić. **Ze względu na to, że to jedyny taki przypadek oraz nie jest to wartość znacząco większa od wartości zaznaczonej jako granica (koniec) wąsa gónego, decyduję się zostawić obserwację w dalszymi etapie badania.** Ponieważ algorytmy analizy skupień są bardzo czułe na występowanie outlier'ów, to w razie gdyby jego pozostawienie spowodowało problemy z wynikami grupowania, usunę go, po czym przeprowadzę ponowne grupowanie. 
+
+### 1.3 Sprawdzenie danych pod kątem formalnym i standaryzacja
+
+Ważnym aspektem przygotowania danych do badania jest sprawdzenie wymogów formalnych dotyczących formalnego doboru zmiennych do analizy. **Użyte w grupowaniu zmienne powinny charakteryzować się zmiennością na poziomie wyższym niż 0.1, a także współliniowością mniejszą niż 0.9. **
+<br/></br>
+Wyniki przedstawiają się następująco:
+<br/><br/>
+```{r, echo=FALSE}
+#spr korelacji
+korelacja <- round(cor(dane),2)
+korelacja %>% kable() %>% kable_styling(font_size = 12) 
+```
+<br/>
+
+Wśród otrzymanych wyników nie ma korelacji wyższej niż graniczna wartość 0.9. Są zmienne bardzo skorelowane, lecz skoro spełniają warunek o którym wspomniałem, to mimo wszystko decyduję się je zostawić w badaniu.
+<br/>
+
+Teraz sprawdzę współczynnik zmienności:
+<br/>
+```{r, echo=FALSE}
+wz<- function(x) {sd(x)/mean(x)}
+wspZM <- round(sapply(dane, wz),3)
+wspZM %>% kable() %>% kable_styling() %>% scroll_box(width = "100%", height = "300px")
+```
+<br/>
+Widzimy, że wszystkie wartości są większe od wymaganego poziomu zmienności, więc zmienne **nadają się do dalszej części analizy.**
+<br/>
+
+Jak wspomniałem wcześniej, aby uzyskać porównywalność i podobny wpływ zmiennych na wynik, należy je zestandaryzować. Używam do tego funkcji `scale`.
+
+```{r}
+dane_st <- scale(dane)
+```
+
+Tak przygotowane i sprawdzone dane mogą być już użyte w procesie grupowania, do którego teraz przechodzę. Zanim jednak dokonam grupowania, przedstawiam wykres pudełkowy zmiennych po standaryzacji, żeby zobrazować jak przedstawiają się zmienne po zestandaryzowaniu.
+
+```{r, echo=FALSE}
+labels<-colnames(dane)
+labels[5] <- "Passes per match"
+labels[6] <- "Big Chances Created"
+boxplot(dane_st, main = "Wykres pudełkowy dla danych zestandaryzowanych",  names = rep('',9), las = 2, col = "green")
+text(x =  seq_along(labels), y = par("usr")[3]-0.6, srt = 45,
+     labels = labels, xpd = TRUE)
+```
+
+
+## 2. Przeprowadzenie analizy skupień
+
+W tej części projektu zajmę się grupowaniem zebranych danych. Przeprowadzone zostanie zarówno grupowanie metodą podziałową jak i metodą hierarchiczną. Po przeprowadzonych badaniach omówię otrzymane wyniki oraz wybiorę moim zdaniem najlepszy wynik.
+
+### 2.1 Grupowanie podziałowe
+
+Metoda grupowania podziałowego polega na wyselekcjonowaniu spośród danych obserwacji k-grup (k-skupień). Co ważne, owe skupienia są rozłączne, a ich liczba (k) musi być określona przed początkiem badania. 
+<br/>
+Do przeprowadzenia grupowania podziałowego wykorzystam metody k-średnich oraz algorytm PAM, będący odmianą metody k-medoid. W obu przypadkach, w algorytmach użyję najpopularniejszy i najczęściej stosowany rodzaj odległości - odległość Euklidesową. 
+<br/> 
+
+#### 2.1.1 Wybór liczby klastrów
+
+Do wyboru liczby grup wykorzystam tzw. metodę łokciową. W grupowaniu skład grupy dobierany jest tak, aby całkowita wariancja wewnątrz klastra była możliwie najmniejsza. Metoda łokciowa bada jaka jest całkowita suma kwadratów wewnątrz klastra. Naszym celem jest, aby była jak najmniejsza, (im więcej grup tym ta suma jest mniejsza, bo grupy różnią się od siebie coraz bardziej) lecz jednocześnie pamiętać musimy o sensownym wyborze liczby grup, tak aby był on interpretowalny i możliwy do uzasadnienia 'życiowo'.
+<br/>
+Aby sprawdzić tą metodą optymalną liczbę klastrów stworzę tzw. wykres łokciowy, za pomocą funkcji `fviz_nbclust` z pakietu `factoextra`. Na jego podstawie, za optymalną liczbę klastrów uważa się liczbę, dla której wykres 'załamuje się', przypominając tym samym łokieć.  
+<br/><br/>
+**Dla metody k-średnich:**
+```{r}
+library(factoextra)
+fviz_nbclust(dane_st, kmeans, method = "wss") 
+```
+<br/><br/>
+**Dla metody PAM:**
+```{r}
+fviz_nbclust(dane_st, pam, method = "wss") 
+```
+<br/>
+Widzimy, że dla metody k-średnich skłaniać można się ku liczbie klastrów równej 4, a dla metody PAM - 3. Sprawdzę więc obie możliwości i wtedy zadecyduję, która opcja jest lepsza i przy użyciu której metody. Wracając jednak do liczby klastrów - wyniki na podstawie wykresu wydają się mieć sens również w praktyce. W 3 klastrowym podziale, możemy się spodziewać grup odpowiadających pozycji zawodników na boisku - obrońców, pomocników i napastników. 4 klastry wiązałyby się prawdopodobnie z podzieleniem jednej z grup na 2 mniejsze - na podstawie intuicji i własnej orientacji w tym temacie spodziewałbym się podziału pomocników na tych o usposobieniu bardziej defensywnym oraz tych, o usposobieniu zdecydowanie bardziej ofensywnym.  
+
+#### 2.1.2 Przeprowadzenie analizy i omówienie wyników
+
+Za pomocą funkcji `kmeans` oraz `pam` dokonuję grupowania za pomocą tych metod. Ze względu na to, że metoda k-średnich nie znajduje minimum globalnego, a lokalne ustawiam liczbę wykonań procedury na 10 - powinno to zapewnić wybór najlepszego grupowania. Wyniki zapisuję, sortuję za pomocą funkcji `order` i wyświetlam: (analogicznie będę postępował przy podziale na 4 klastry)
+
+**3 klastry**
+```{r}
+kM <- kmeans(dane_st, centers=3,nstart = 10)
+pM <- pam(dane_st, k=3)
+wynik <- cbind(kM$cluster,pM$clustering)
+colnames(wynik) <- c("k-means","PAM")
+wynik <- wynik[order(wynik[,1]),]
+wynik %>% kable() %>% kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% scroll_box(width = "100%", height = "250px")
+```
+<br/>
+Widzimy, że obie procedury pogrupowały zawodników tak samo. Skład poszczególnych grup nie różni się w obu algorytmach. Aby zobaczyć główne różnice w grupach obliczam średnie i odchylenia standardowe dla każdej z grup:
+
+<br/>
+**ŚREDNIE**
+```{r, echo=FALSE}
+library(dplyr)
+dane$kM2 <- kM$cluster
+dane$pM2 <- pM$clustering
+
+dane[,-11] %>% group_by(kM2) %>% summarise_all(funs(mean)) %>% round(2) %>% kable() %>% kable_styling() 
+```
+</br>
+**ODCHYLENIA**
+```{r, echo = FALSE}
+dane[,-11] %>% group_by(kM2) %>% summarise_all(funs(sd)) %>%
+  round(2) %>% kable() %>% kable_styling() 
+```
+
+Widzimy, że poszczególne grupy różnią się od siebie. Grupa pierwsza charakteryzuje się małą liczbą strzelonych bramek, oddanych strzałów, spalonych, asyst, stwarzanych okazji i dośrodkowań, natomiast dużą liczbą przechwyceń piłki i wybić. Wskazywało by to na grupę zawodników stricte defensywnych, szczególnie obrońców i defensywnych pomocników. Patrząc po nazwiskach przyporządkowanych piłkarzy - nie mam wątpliwości, że tak jest. Do tej grupy zaklasyfikowani zostali obrońcy i defensywni pomocnicy. <br/>
+Grupa 2 posiada wszystkie ofensywne statystyki na poziomie znacznie wyższym niż grupa 1, a defensywne - na niższym. Podobnie grupa 3. Wskazuje to na fakt, że są to grupy zawodników ofensywnych. Czym się jednak różnią ?
+<br/>
+Od razu w w oczy rzuca się większa liczba bramek, strzałów i spalonych w grupie 3. Widać również prawie 2x mniejsze wartości statystyk defensywnych (Interceptions, Clearences). Grupa 2 natomiast ma lepsze liczby pod względem asyst, podań wykonanych średnio w meczu, tworzonych sytuacji oraz dośrodkowań. Dzięki temu mogę z pewnością stwierdzić, że grupa 2 jest grupą zawodników zajmujących się w większym stopniu kreowaniem gry, a 3 - zdobywaniem bramek. Grupa 2 więc to pomocnicy ofensywni, a trzecia to napastnicy. Rzut oka na nazwiska w tych grupach pozwala ze stuprocentową pewnością stwierdzić poprawność moich przypuszczeń.
+<br/>
+Podział na 3 grupy jest dobrym rozwiązaniem. Jednak na podstawie wykresów łokciowym rozsądnym rozwiązaniem będzie sprawdzić również podział na 4 klastry. Rzut oka na odchylenia w poszczególnych klastrach pozwala mi domyślać się, że podział na 4 klastry będzie zawierał w sobie niezmienione grupy 2 i 3, a także grupę 1 podzieloną na 2 inne. Skłaniają mnie do tego stosunkowo dużę wartości odchylenia standardowego dla zmiennych Interceptions i Clearences w grupie 1. Jak wyżej wspomniałem, do tej grupy zostali przyporządkowani zawodnicy występujący na pozycji obrońcy oraz defensywnego pomocnika. Prawdopodobnie więc, nastąpi podział grupy numer 1 na te dwie grupy.
+
+**4 klastry - wyniki**
+
+```{r, echo=FALSE}
+kM <- kmeans(dane_st, centers=4,nstart = 10)
+pM <- pam(dane_st, k=4)
+wynik <- cbind(kM$cluster,pM$clustering)
+colnames(wynik) <- c("k-means","PAM")
+wynik <- wynik[order(wynik[,1]),]
+wynik %>% kable() %>% kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>% scroll_box(width = "100%", height = "300px")
+```
+
+Wyniki algorytmu PAM w 100% pokrywają się z moimi przewidywaniami. Inaczej sytuacja ma się jednak jeśli chodzi o wyniki algorytmu k-średnich. Przyjrzyjmy się więc bliżej średnim i odchyleniom w grupach. Najpierw te powstałe w wyniku zastosowania algorytmu k-średnich.
+
+**ŚREDNIE**
+```{r, echo=FALSE}
+dane$kM4 <- kM$cluster
+dane$pM4 <- pM$clustering
+
+dane[,-c(10,11,13)] %>% group_by(kM4) %>% summarise_all(funs(mean)) %>% round(2) %>% kable() %>% kable_styling() 
+```
+
+**ODCHYLENIA**
+```{r,echo=FALSE}
+dane[,-c(10,11,13)] %>% group_by(kM4) %>% summarise_all(funs(sd)) %>%
+  round(2) %>% kable() %>% kable_styling() 
+```
+
+Na podstawie różnic między grupa 2 i 3, można by stwierdzić, że zawodnicy z grupy 3 mają słabsze statystyki w ofensywie, bo grają bliżej swojej bramki. Wskazywałyby na to istotnie większa liczba wybić piłki, mniejsza liczba spalonych i zdecydowanie mniejsza liczba wykreowanych sytuacji. Mogłoby to sugerować, że z grupy ofensywnych pomocników powstały dwie nowe - jedna składająca się z zawodników występujących na pozycji '8' - rozgrywających, mających więcej zadań w defensywie i wyprowadzeniu piłki, mniej kreatywnych. Druga grupa zawierałaby wtedy skrzydłowych lub zawodników grający na tzw. dziesiątce - za plecami zawodnika, kreatywnych zawodników potrafiących 1 zagraniem stworzyć sytuację koledze z drużyny. Jednak rzut oka na nazwiska nie napawa mnie optymizmem w związku z takim podziałem - w grupie 3 znaleźli się Lingard, Rooney i Willian. Zawodnicy, którzy na boisku ustawiani są zdecydowanie bardziej tuż za plecami napastnika/na skrzydle. Jedynie Xhaka pasowałby do pozycji numer 8. Może to wynikać, ze słabszych liczb w ofensywie jakie zanotowali Ci zawodnicy w tamtym sezonie czy też faktu że np. Rooney występuje w Evertonie - prawdopodobnie najsłabszym klubie spośród tych, których zawodnicy znaleźli się w moich danych.
+
+Dla lepszego zobrazowania wyniku i późniejszej różnicy miedzy wynikami algorytmu k-średnich i algorytmu PAM, dołączam wykres klastrów stworzony za pomocą funkcji `fviz_cluster` z wspomnianego wcześniej pakietu `factoextra`.
+Funkcja ta prezentuje grupy powstałe w wyniku danego podziału na dwuwymiarowym wykresie. Automatycznie przestałca ona zmienne wielowymiarowe na dwuwymiarowe, tak aby można było je łatwo i czytelnie przedstawić na wykresie. Są one liniową kombinacją zmiennych podstawowych. Nowe zmienne mają za zadanie w jak największym stopniu zawierać informacje, które niosły ze sobą wcześniejsze zmienne. Procenty zawarte na osiach informują w jakim stopniu nowe zmienne wyjaśniają/opisują informacje zawarte w pierwotnych zmiennych. Proces ten zwany jest 'analizą głównych składowych'. Nie będe sie jednak w niego bardziej zagłębiał, ponieważ w tym wypadku głównym motywem do użycia tej funkcji była chęć przedstawienia grup na wykresie i temu ma służyć jej zastosowanie. Wykresie, który prezentuje się następująco:
+
+```{r}
+fviz_cluster(kM, data = dane_st)
+```
+
+<br/>Biorąc pod uwagę aspekty, o których wspomniałem wcześniej oraz wykres na którym widać, że grupy 2 i 3 są bardzo blisko siebie - odrzucam ten podział. Spójrzmy jednak na podział, który proponuje metoda PAM.
+
+**ŚREDNIE**
+```{r,echo=FALSE}
+dane[,-c(10,11,12)] %>% group_by(pM4) %>% summarise_all(funs(mean)) %>% round(2) %>% kable() %>% kable_styling() 
+```
+
+**ODCHYLENIA**
+```{r,echo=FALSE}
+dane[,-c(10,11,12)] %>% group_by(pM4) %>% summarise_all(funs(sd)) %>%
+  round(2) %>% kable() %>% kable_styling() 
+```
+
+Widzimy, że grupa 1 to grupa napastników z podziału na 3 klastry. Grupa 3 - pomocnicy. Podzielona została grupa zawodników defensywnych. Grupa oznaczona jako 2 charakteryzuje się zdecydowanie największą liczbą wybić piłki oddalających zagrożenie od własnej bramki - co jest charakterystyczną cechą środkowych obrońców. Bardzo mała liczba bramek, asysty, strzałów, spalonych i wykreowanych sytuacji tylko potwierdza to przypuszczenie. Czym jednak różni się grupa 4, skoro wcześniej te grupy tworzyły jedną większą? <br/>
+
+Zdecydowanie mniejsza liczba wybić sugerować może, że grają oni wyżej na boisku. Wyższa liczba przechwytów również. Podobnie jak niewiele wyższe statystyki liczby bramek czy asyst. Zdecydowanie więcej tworzą oni jednak sytuacji kolegom, wykonują zdecydowanie (8x!) więcej dośrodkowań, a także oddają 2 razy więcej strzałów. Te statystyki potwierdzają moje przypuszczenia i grupa ta prawdopodobnie będzie grupą środkowych defensywnych pomocników, zawodników występujących na pozycji numer '6'. Rzut oka na zawodników przyporządkowanych do tej grupy potwierdza tę tezę - Kante, Matic, Fernanhinho i Dier to jedni z najlepszych zawodników grających na 'szóstce' w Premier League. <br/>
+
+Żeby zobrazować wyniki dla algorytmu PAM przedstawiam analogiczny wykres jak w przypadku metody k-średnich:
+
+```{r}
+fviz_cluster(pM,dane_st)
+```
+
+Ten wykres i grupy na nim przedstawione sprawia już lepsze wrażenie niż grupy z podziału metodą k-średnich. Różnice między grupami wydają się być większa. Co więcej, obserwacje z grupy 4 są do siebie bardzo zbliżone, co jest kolejnym plusem tego podziału.
+<br/>
+Biorąc pod uwagę przeprowadzone grupowania i ich wyniki, za najlepszy spośród grupowania podziałowego uznaję ten ostatni - otrzymany przy zastosowaniu algorytmu PAM przy podziale na 4 klastry.
+
+### 2.2 Grupowanie hierarchiczne
+
+Polega na łączeniu elementów w coraz większe grupy (na podstawie funkcji odległości) do momentu, aż uzyskamy skupienie zawierające wszystkie elementy. Do przeprowadzenia tego badania można użyć kilku funkcji odległości. W moim badaniu pojawią się metody centroidalna, mediany oraz Warda. Metod najbliższego i najdalszego sąsiada nie sprawdzam, ponieważ w praktyce nie są one stosowane ze względu na swoje wady.
+
+#### 2.2.1 Wyniki
+
+Wyniki poszczególnych metod przedstawię za pomocą dendrogramów, stworzonych z użyciem funkcji `ggdendrogram` i pakietu `ggdendro`:
+
+**Metoda Warda**
+<br/>
+```{r}
+library(ggdendro)
+odl <- dist(dane_st)
+podzialW <- hclust(odl, method = "ward.D2")
+ggdendrogram(podzialW)
+```
+
+
+**Metoda mediany**
+<br/>
+```{r,echo=FALSE}
+podzialM <- hclust(odl, method = "median")
+ggdendrogram(podzialM)
+```
+
+
+**Metoda Centroidalna**
+<br/>
+```{r,echo=FALSE}
+podzialC <- hclust(odl, method = "centroid")
+ggdendrogram(podzialC)
+```
+<br/>
+
+Zdecydowanie najbardziej czytelny jest dendrogram dla metody Warda. Ponadto, patrząc na to jak dobierani są do siebie poszczególnie piłkarze, metoda Warda również i pod tym względem wydaje się sensowniejsza niż pozostałe. Tak więc to dla niej będę wykonywał kolejne etapy badania.
+
+#### 2.2.2 Wybór liczby klastrów
+
+Do wyboru liczby klastrów dla grupowania hierarchicznego metodą Warda posłużę się ponownie metodą łokciową - analogicznie jak w wypadku metod k-średnich i PAM.
+
+<br/>
+```{r, echo=FALSE}
+fviz_nbclust(dane_st, hcut, method = "wss") 
+```
+
+Metoda nie wskazuje jednoznacznie na jakiś wynik. Można się zastanawiać na 2 / 3 grupami, a także 4 jak w najlepszym grupowaniu podziałowym. Sprawdzę jeszcze jaką liczbę klastrów podpowiada metoda 'silhouette'. Określa ona jak dobrze każdy z obiektów pasuje do klastra, do którego został przypisany. Za optymalną liczbę skupień przyjmuje się tą, która przyjmuje wartość maksymalną. 
+
+```{r,echo=FALSE}
+fviz_nbclust(dane_st, hcut, method = "silhouette")
+```
+
+Z wykresu wynika, że wg tej metody najlepszym rozwiązaniem byłoby zastosowanie 2-klastrowego podziału. Jest to wg mnie jednak zbyt obszerny podział. Z tego względu decyduję się sprawdzić jak przedstawiają się trzy- i cztero-klastrowe podziały metodą Warda.
+
+**3 klastry**
+
+Wydzielenie klastrów na dendrogramie:
+
+```{r, echo=FALSE}
+plot(podzialW)
+rect.hclust(podzialW, k = 3, border = 2:4)
+```
+
+Przedstawienie wyniku na wykresie:
+
+```{r, echo=FALSE}
+sub_grp <- cutree(podzialW, k=3)
+fviz_cluster(list(data=dane_st, cluster = sub_grp))
+```
+
+Grupa 1 przedstawia napastników, do grona których włączono jednak tym razem 2 kolejnych zawodników (Rooney'a i Lingarda) z czym nie do końca można się zgodzić. Również sam fakt, że Ci zawodnicy są bardzo blisko grupy 3 na wykresie jest niepokojący. Zobaczmy jak przedstawiają się wyniki dla 4 klastrów.
+
+**4 klastry**
+
+Wydzielenie klastrów na dendrogramie:
+
+```{r, echo=FALSE}
+plot(podzialW)
+rect.hclust(podzialW, k = 4, border = 2:5)
+```
+
+Przedstawienie wyniku na wykresie:
+
+```{r, echo=FALSE}
+sub_grp <- cutree(podzialW, k=4)
+fviz_cluster(list(data=dane_st, cluster = sub_grp))
+```
+
+Nastąpił podział grupy 2 na 2 części. Analogicznie jak w grupowaniu podziałowym metodą PAM - defensywni pomocnicy odłączyli się od obrońców. Wątpliwości dotyczące zaklasyfikowania 2 zawodnikóW o których wspomniałem nadal pozostały. 
+<br/> Zobaczę jak przedstawiają się statystyki średniej dla tego podziału, który ponownie uważam za lepszy niż 3 klastrowy:
+
+```{r, echo=FALSE}
+dane$pW <- cutree(podzialW, k=4)
+dane[,-c(10,11,12,13)] %>% group_by(pW) %>% summarise_all(funs(mean)) %>% round(2) %>% kable() %>% kable_styling() 
+```
+
+Jest to podział, który z pewnością się wybroni - ma sens, co potwierdzają powyższe średnie. Odpowiednie grupy nadal mają poszczególne statystyki na odpowiednim poziomie i są od siebie różne, na tyle, że jasno możemy określić, która grupa zawiera jakich piłkarzy i czym poszczególne grupy się od siebie różnią.
+
+###2.3 Podsumowanie i wybór najlepszego wyniku.
+
+Podsumowując: za najlepszy wynik grupowania podziałowego uznano podział 4 klastrowy za pomocą metody PAM. Jeśli chodzi o grupowanie hierarchiczne, tu również najlepszy okazał się wg mnie 4 klastrowy podział, za pomocą metody Warda. Przedstawiają się one następująco:
+
+```{r,echo=FALSE}
+fviz_cluster(pM,dane_st)
+fviz_cluster(list(data=dane_st, cluster = sub_grp))
+```
+
+
+Powyższe wyniki nie różnią się znacząco od siebie i oba zdecydowanie można uznać za satysfakcjonujące. Obie metody sa najczęściej stosowanymi w praktyce, tak więc fakt, że to właśnie te podziały uznałem za najlepsze nie powinien szczególnie zaskakiwać. Jako lepszy wybrałbym grupowanie podziałowe metodą PAM, ze względu na lepsze zaklasyfikowanie Rooney'a i Lingarda - w moich oczach są to zawodnicy, których profil i pozycja na boisku w tamtym sezonie bardziej odpowiadała grupie ofensywnych pomocników. Jednak plusem metody Warda jest w tym wypadku klasyfikacja Granita Xhaki jako defensywnego pomocnika - co jest moim zdaniem zgodne z rzeczywistością. Przekładam jednak większe odległości między grupami i 2 lepiej zaklasyfikowanych zawodników nad 1, **więc za najlepszy podział, uznaję grupowanie podziałowe metodą PAM. **
+<br/>
+Zaznaczam przy tym jednak, że zarówno zaklasyfikowanie Rooney'a i Lingarda jako napastników, jak i Xhaki jako ofensywnego pomocnika, nie jest błędem i w rzeczywistości zawodnicy Ci, ze względu na swoje wszechtronne umiejętności mogą występować (i występują) na obu rozważanych pozycjach, a zwolennicy klasyfikowania ich inaczej niż ja z pewnością zaleźliby swoje argumenty.
